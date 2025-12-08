@@ -9,6 +9,7 @@ export default defineConfig({
   // --- MUDANÇA CRUCIAL AQUI ---
   // Isso injeta a data/hora no código, garantindo que o arquivo final
   // seja sempre diferente do anterior (mata o cache).
+  
   define: {
     'process.env.BUILD_TIME': JSON.stringify(new Date().toISOString()),
   },
