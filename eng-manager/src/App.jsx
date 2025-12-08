@@ -1,16 +1,6 @@
 import React from 'react';
 // src/main.jsx (ou App.jsx)
 import { BrowserRouter } from 'react-router-dom';
-
-ReactDOM.createRoot(document.getElementById('root')).render(
-  <React.StrictMode>
-    {/* ADICIONE O BASENAME AQUI: */}
-    <BrowserRouter basename="/App_Engenharia">
-      <App />
-    </BrowserRouter>
-  </React.StrictMode>,
-)
-
 import { Toaster } from 'sonner';
 
 // Componentes de Layout
