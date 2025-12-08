@@ -4,6 +4,7 @@ import react from '@vitejs/plugin-react'
 // https://vitejs.dev/config/
 export default defineConfig({
   plugins: [react()],
+  base: "/App_Engenharia/",
   build: {
     chunkSizeWarningLimit: 1000, // Aumenta o limite do aviso para 1000kb (opcional, para silenciar o aviso)
     rollupOptions: {
