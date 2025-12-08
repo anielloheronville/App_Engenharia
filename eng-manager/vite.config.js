@@ -5,8 +5,17 @@ import react from '@vitejs/plugin-react'
 export default defineConfig({
   plugins: [react()],
   base: "/App_Engenharia/",
+
+  // --- MUDANÇA CRUCIAL AQUI ---
+  // Isso injeta a data/hora no código, garantindo que o arquivo final
+  // seja sempre diferente do anterior (mata o cache).
+  define: {
+    'process.env.BUILD_TIME': JSON.stringify(new Date().toISOString()),
+  },
+  // ---------------------------
+
   build: {
-    chunkSizeWarningLimit: 1000, // Aumenta o limite do aviso para 1000kb (opcional, para silenciar o aviso)
+    chunkSizeWarningLimit: 1000,
     rollupOptions: {
       output: {
         manualChunks(id) {
