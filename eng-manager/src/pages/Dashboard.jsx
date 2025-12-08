@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { API_URL } from '../config'; // Ajuste os pontos (..) dependendo de onde o arquivo está
+import { API_URL } from '../../config'; // (Ajuste os pontos conforme a pasta)
 import { 
   TrendingUp, 
   AlertCircle, 
@@ -296,25 +296,24 @@ const Dashboard = () => {
 
 
   // --- Função para buscar dados completos (KPIs, Progresso, Gráficos) ---
-  const fetchCompleteData = async () => {
-    try {
-      // 1. Busca KPIs (Status Financeiro)
-      const resKpis = await fetch(`${API_URL}/kpis/`);
-      const dadosKpis = await resKpis.json();
-      setKpis(dadosKpis);
-      
-      // 2. Busca Progresso Simples (Tabela)
-      const resProgresso = await fetch(`${API_URL}/financeiro/progresso_simples`);
-      const dadosProgresso = await resProgresso.json();
-      setSimpleProgressData(dadosProgresso);
-      
-      // 3. Busca Dados para Gráficos (Desembolso/Curva S)
-      // Nota: Esta rota '/desembolso/dados' estava instável. Se falhar, o Dashboard carregará sem gráficos.
-      const resChart = await fetch(`${API_URL}/desembolso/dados`);
-      if (resChart.ok) {
-          const dadosChart = await resChart.json();
-          setChartData(dadosChart);
-      } else {
+ const fetchCompletedData = async () => {
+  try {
+    // 1. Busca KPIs (Use crase ` e ${API_URL})
+    const resKpis = await fetch(`${API_URL}/kpis/`); 
+    const dadosKpis = await resKpis.json();
+    setKpis(dadosKpis);
+
+    // 2. Busca Progresso Simples
+    const resProgresso = await fetch(`${API_URL}/financeiro/progresso_simples`);
+    const dadosProgresso = await resProgresso.json();
+    setSimpleProgressData(dadosProgresso);
+
+    // 3. Busca Dados para Gráficos
+    const resChart = await fetch(`${API_URL}/desembolso/dados`);
+    if (resChart.ok) {
+        const dadosChart = await resChart.json();
+        setChartData(dadosChart);
+    } else {
           console.warn("Falha ao carregar dados do gráfico /desembolso/dados. Carregando dados básicos.");
           setChartData([]);
       }
