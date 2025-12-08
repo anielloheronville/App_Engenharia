@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { API_URL } from '../config'; // Ajuste os pontos (..) dependendo de onde o arquivo está
 import { 
   TrendingUp, 
   AlertCircle, 
@@ -298,18 +299,18 @@ const Dashboard = () => {
   const fetchCompleteData = async () => {
     try {
       // 1. Busca KPIs (Status Financeiro)
-      const resKpis = await fetch('http://127.0.0.1:8000/kpis/');
+      const resKpis = await fetch(`${API_URL}/kpis/`);
       const dadosKpis = await resKpis.json();
       setKpis(dadosKpis);
       
       // 2. Busca Progresso Simples (Tabela)
-      const resProgresso = await fetch('http://127.0.0.1:8000/financeiro/progresso_simples');
+      const resProgresso = await fetch(`${API_URL}/financeiro/progresso_simples`);
       const dadosProgresso = await resProgresso.json();
       setSimpleProgressData(dadosProgresso);
       
       // 3. Busca Dados para Gráficos (Desembolso/Curva S)
       // Nota: Esta rota '/desembolso/dados' estava instável. Se falhar, o Dashboard carregará sem gráficos.
-      const resChart = await fetch('http://127.0.0.1:8000/desembolso/dados');
+      const resChart = await fetch(`${API_URL}/desembolso/dados`);
       if (resChart.ok) {
           const dadosChart = await resChart.json();
           setChartData(dadosChart);
