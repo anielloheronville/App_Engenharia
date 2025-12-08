@@ -141,6 +141,7 @@ app = FastAPI(title="EngManager API", description="API para Gestão de Engenhari
 
 origins = [
     "http://localhost:5173",
+    "https://anielloheronville.github.io"
 ]
 
 app.add_middleware(
