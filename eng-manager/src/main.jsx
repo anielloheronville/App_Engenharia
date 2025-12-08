@@ -1,10 +1,14 @@
 import React from 'react'
-import ReactDOM from 'react-dom/client'
+import { createRoot } from 'react-dom/client' // <--- MUDANÇA AQUI
 import App from './App.jsx'
-import './index.css' // <--- ESSA LINHA É A CHAVE!
+import './index.css'
+import { BrowserRouter } from 'react-router-dom'
 
-ReactDOM.createRoot(document.getElementById('root')).render(
+// <--- MUDANÇA AQUI: Removemos "ReactDOM." e usamos direto "createRoot"
+createRoot(document.getElementById('root')).render(
   <React.StrictMode>
-    <App />
+    <BrowserRouter basename="/App_Engenharia">
+      <App />
+    </BrowserRouter>
   </React.StrictMode>,
 )
