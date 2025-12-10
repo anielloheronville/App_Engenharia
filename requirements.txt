@@ -1,6 +1,4 @@
-Flask
-psycopg2-binary
-gunicorndash
+dash
 dash-bootstrap-components
 pandas
 sqlalchemy
