@@ -1,3 +1,12 @@
 Flask
 psycopg2-binary
+gunicorndash
+dash-bootstrap-components
+pandas
+sqlalchemy
+plotly
+psycopg2-binary
 gunicorn
+python-dateutil
+openpyxl
+flask
