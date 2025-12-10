@@ -1,0 +1,108 @@
+/* --- assets/custom.css --- */
+
+/* 1. IMPORTAÇÃO DA FONTE (Inter) */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+
+/* 2. ESTILO GERAL DO CORPO */
+body {
+    font-family: 'Inter', sans-serif !important;
+    background-color: #f3f4f6; /* Cinza bem suave para o fundo */
+    color: #1f2937; /* Cinza escuro para texto (menos cansativo que preto puro) */
+}
+
+h1, h2, h3, h4, h5, h6, .h1, .h2, .h3, .h4, .h5, .h6 {
+    font-family: 'Inter', sans-serif !important;
+    font-weight: 700;
+    letter-spacing: -0.025em; /* Deixa títulos mais "compactos" e modernos */
+}
+
+/* 3. BARRA DE ROLAGEM MODERNA (Crucial para o Gantt) */
+/* Funciona no Chrome, Edge e Safari */
+::-webkit-scrollbar {
+    width: 8px;   /* Largura vertical */
+    height: 10px;  /* Altura horizontal (Gantt) */
+}
+
+::-webkit-scrollbar-track {
+    background: #f1f5f9; 
+    border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb {
+    background: #cbd5e1; /* Cor da barra em repouso */
+    border-radius: 4px;
+    border: 2px solid #f1f5f9; /* Espaço ao redor da barra */
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: #94a3b8; /* Cor da barra ao passar o mouse */
+}
+
+/* 4. MENU LATERAL (SIDEBAR) */
+.nav-pills .nav-link {
+    font-weight: 500;
+    margin-bottom: 4px;
+    transition: all 0.2s ease-in-out;
+}
+
+/* Efeito ao passar o mouse nos itens inativos */
+.nav-pills .nav-link:hover:not(.active) {
+    background-color: rgba(255, 255, 255, 0.1);
+    color: white !important;
+    transform: translateX(4px); /* Pequeno movimento para a direita */
+}
+
+/* Item Ativo (Selecionado) */
+.nav-pills .nav-link.active {
+    background-color: #2563eb !important; /* Azul Royal Vibrante */
+    color: white !important;
+    box-shadow: 0 4px 12px rgba(37, 99, 235, 0.4); /* Sombra suave brilhante */
+    font-weight: 600;
+}
+
+/* 5. CARTÕES (CARDS) */
+.card {
+    border: none !important; /* Remove borda cinza padrão do Bootstrap */
+    box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06); /* Sombra suave */
+    transition: box-shadow 0.3s ease;
+}
+
+.card:hover {
+    box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05); /* Sombra maior ao passar o mouse */
+}
+
+.card-header {
+    background-color: transparent !important;
+    border-bottom: 1px solid #f3f4f6;
+    padding-top: 1.25rem;
+    padding-bottom: 0.75rem;
+}
+
+/* 6. TABELAS */
+.dash-spreadsheet-container .dash-spreadsheet-inner th {
+    font-family: 'Inter', sans-serif !important;
+    font-weight: 600 !important;
+    text-transform: uppercase;
+    font-size: 0.75rem !important;
+    letter-spacing: 0.05em;
+    color: #6b7280;
+}
+
+/* 7. INPUTS E SELECTS */
+.form-control, .form-select {
+    border-radius: 8px !important; /* Cantos mais arredondados */
+    border: 1px solid #e5e7eb;
+    padding: 0.5rem 0.75rem;
+}
+
+.form-control:focus, .form-select:focus {
+    border-color: #2563eb;
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1) !important; /* Glow azul suave ao focar */
+}
+
+/* Ajuste específico para Botões */
+.btn {
+    border-radius: 8px !important;
+    font-weight: 500;
+    letter-spacing: 0.025em;
+}
