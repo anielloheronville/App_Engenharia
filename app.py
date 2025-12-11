@@ -6,34 +6,31 @@ from sqlalchemy import create_engine, text
 import plotly.express as px
 import plotly.graph_objects as go
 import os
+from dotenv import load_dotenv
 from datetime import date, datetime
 from dateutil.relativedelta import relativedelta
 
-# ... (imports anteriores permanecem iguais)
-import os
-from dotenv import load_dotenv # NOVO IMPORT
-
-# Carrega as variáveis do arquivo .env (se ele existir localmente)
+# --- 1. CONFIGURAÇÃO E SEGURANÇA ---
+# Carrega variáveis de ambiente do arquivo .env
 load_dotenv()
 
-# --- 1. CONFIGURAÇÃO E CONEXÃO ---
-# Agora pegamos a URL apenas do ambiente. Sem valor padrão (fallback) inseguro.
 db_url = os.getenv("DATABASE_URL")
 
+# Fallback apenas para evitar crash se a variável não estiver setada (mas avisa no log)
 if not db_url:
-    raise ValueError("ERRO DE SEGURANÇA: A variável de ambiente 'DATABASE_URL' não foi encontrada. Crie um arquivo .env localmente ou configure as Variáveis de Ambiente no seu servidor (Render).")
-
-# Ajuste necessário para o SQLAlchemy (Render fornece postgres:// mas a lib exige postgresql://)
-if db_url.startswith("postgres://"):
+    print("⚠️ AVISO: Variável DATABASE_URL não encontrada. Usando banco SQLite local para testes.")
+    db_url = "sqlite:///local_test.db" # Fallback seguro para dev local
+elif db_url.startswith("postgres://"):
     db_url = db_url.replace("postgres://", "postgresql://", 1)
 
 engine = create_engine(db_url)
-# ... (resto do código segue igual)
 
+# --- 2. INICIALIZAÇÃO DO BANCO (COM HISTÓRICO) ---
 def init_db():
     try:
         with engine.connect() as conn:
             conn.execute(text("CREATE TABLE IF NOT EXISTS projetos (id SERIAL PRIMARY KEY, nome VARCHAR(255));"))
+            
             conn.execute(text("""
                 CREATE TABLE IF NOT EXISTS cronograma_etapas (
                     id SERIAL PRIMARY KEY, projeto_id INTEGER REFERENCES projetos(id),
@@ -41,6 +38,10 @@ def init_db():
                     valor_estimado NUMERIC(15,2) DEFAULT 0, status VARCHAR(50) DEFAULT 'A Fazer'
                 );
             """))
+            # Garante coluna percentual (caso banco antigo)
+            try: conn.execute(text("ALTER TABLE cronograma_etapas ADD COLUMN IF NOT EXISTS percentual INTEGER DEFAULT 0;"))
+            except: pass
+
             conn.execute(text("""
                 CREATE TABLE IF NOT EXISTS despesas (
                     id SERIAL PRIMARY KEY, projeto_id INTEGER REFERENCES projetos(id),
@@ -48,12 +49,24 @@ def init_db():
                     valor NUMERIC(15,2), data_pagamento DATE, status VARCHAR(50) DEFAULT 'Pago'
                 );
             """))
+            
             conn.execute(text("""
                 CREATE TABLE IF NOT EXISTS permutas (
                     id SERIAL PRIMARY KEY, projeto_id INTEGER REFERENCES projetos(id),
                     descricao VARCHAR(255), data_permuta DATE, valor NUMERIC(15,2) DEFAULT 0
                 );
             """))
+
+            # --- NOVA TABELA: HISTÓRICO FÍSICO ---
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS historico_fisico (
+                    id SERIAL PRIMARY KEY,
+                    etapa_id INTEGER REFERENCES cronograma_etapas(id) ON DELETE CASCADE,
+                    data_registro DATE DEFAULT CURRENT_DATE,
+                    percentual_novo INTEGER
+                );
+            """))
+            
             conn.commit()
     except Exception as e:
         print(f"Erro DB Init: {e}")
@@ -63,14 +76,13 @@ init_db()
 def update_db_schema():
     try:
         with engine.connect() as conn:
-            conn.execute(text("ALTER TABLE cronograma_etapas ADD COLUMN IF NOT EXISTS percentual INTEGER DEFAULT 0;"))
             conn.execute(text("ALTER TABLE projetos ADD COLUMN IF NOT EXISTS empresa VARCHAR(100) DEFAULT 'Própria';"))
             conn.commit()
     except: pass
 
 update_db_schema()
 
-# --- 2. FUNÇÕES DE DADOS (MODEL) ---
+# --- 3. MODEL E DADOS ---
 
 def get_projetos():
     try: return pd.read_sql("SELECT id, nome, empresa FROM projetos ORDER BY id DESC", engine)
@@ -95,6 +107,36 @@ def get_permutas():
         sql = """SELECT pm.id, p.nome as projeto, pm.projeto_id, pm.descricao, pm.valor, pm.data_permuta 
                  FROM permutas pm JOIN projetos p ON pm.projeto_id = p.id ORDER BY pm.data_permuta DESC"""
         return pd.read_sql(sql, engine)
+    except: return pd.DataFrame()
+
+def get_dados_historico_tendencia(filtro_id=None):
+    # Busca o histórico de alterações para montar a curva S realizada
+    try:
+        sql = """
+            SELECT h.data_registro, p.nome as projeto, e.valor_estimado, h.percentual_novo, p.id as projeto_id
+            FROM historico_fisico h
+            JOIN cronograma_etapas e ON h.etapa_id = e.id
+            JOIN projetos p ON e.projeto_id = p.id
+            ORDER BY h.data_registro ASC
+        """
+        df = pd.read_sql(sql, engine)
+        
+        if df.empty: return pd.DataFrame()
+
+        if filtro_id and str(filtro_id) != 'todos':
+            df = df[df['projeto_id'] == int(filtro_id)]
+            
+        # Logica Simplificada de Tendência:
+        # Agrupa por data e calcula a "Média Ponderada da Evolução" registrada naquele dia
+        # Para um sistema perfeito, precisaria recalcular o estado total da obra dia a dia.
+        # Aqui vamos mostrar os "Pontos de Evolução".
+        df['valor_realizado'] = df['valor_estimado'] * (df['percentual_novo'] / 100)
+        
+        # Agrupa por Data e Projeto para somar o que foi realizado acumulado
+        # Nota: Isso é uma aproximação baseada nos registros de UPDATE.
+        df_agrupado = df.groupby(['data_registro', 'projeto'])['percentual_novo'].mean().reset_index()
+        
+        return df_agrupado
     except: return pd.DataFrame()
 
 def get_tabela_resumo_financeiro():
@@ -123,7 +165,6 @@ def get_tabela_resumo_financeiro():
     if 'empresa' not in df_proj.columns: df_proj['empresa'] = 'Própria' 
 
     df_final = pd.merge(df_proj, df_orcado, left_on='id', right_on='projeto_id', how='left')
-    # Ajuste no merge para usar nomes, mas mantendo ID para filtro posterior
     df_final = pd.merge(df_final, df_pago, left_on='nome', right_on='projeto', how='left')
     df_final = pd.merge(df_final, df_perm_g, left_on='nome', right_on='projeto', how='left')
     
@@ -134,7 +175,6 @@ def get_tabela_resumo_financeiro():
     df_final['saldo'] = df_final['vl_contrato'] - df_final['vl_pago'] - df_final['vl_permuta']
     df_final['perc_pago'] = df_final.apply(lambda x: ((x['vl_pago'] + x['vl_permuta']) / x['vl_contrato'] * 100) if x['vl_contrato'] > 0 else 0, axis=1)
     
-    # Filtra apenas obras ativas (com contrato ou pagamentos)
     df_final = df_final[(df_final['vl_contrato'] > 0) | (df_final['vl_pago'] > 0) | (df_final['vl_permuta'] > 0)]
     return df_final
 
@@ -144,7 +184,6 @@ def get_kpis_globais(filtro_id=None):
         df_desp = get_despesas_realizadas()
         df_permuta = get_permutas()
 
-        # Aplica Filtro
         if filtro_id and str(filtro_id) != 'todos':
             fid = int(filtro_id)
             if not df_crono.empty: df_crono = df_crono[df_crono['projeto_id'] == fid]
@@ -154,37 +193,41 @@ def get_kpis_globais(filtro_id=None):
         total_contratado = df_crono['valor_estimado'].sum() if not df_crono.empty else 0
         total_pago = df_desp['valor'].sum() if not df_desp.empty else 0
         total_permuta = df_permuta['valor'].sum() if not df_permuta.empty else 0
-        
         saldo = total_contratado - total_pago - total_permuta
         atraso = 0
         
         if not df_crono.empty:
             df_crono['data_fim'] = pd.to_datetime(df_crono['data_fim'])
-            mask_atraso = (df_crono['data_fim'] < pd.Timestamp.now()) & (df_crono['status'] != 'Concluído')
-            atraso_bruto = df_crono.loc[mask_atraso, 'valor_estimado'].sum()
-            atraso = max(0, atraso_bruto) # Simplificação: Atraso é o valor da etapa atrasada bruta
+            mask_atraso = (df_crono['data_fim'] < pd.Timestamp.now()) & (df_crono['percentual'] < 100)
+            df_crono['valor_pendente'] = df_crono['valor_estimado'] * (1 - (df_crono['percentual'] / 100))
+            atraso = df_crono.loc[mask_atraso, 'valor_pendente'].sum()
 
-        return total_contratado, total_permuta, total_pago, saldo, atraso
-    except: return 0, 0, 0, 0, 0
+        # --- FÍSICO vs FINANCEIRO ---
+        perc_fisico = 0
+        perc_financeiro = 0
+        if total_contratado > 0:
+            valor_fisico_executado = (df_crono['valor_estimado'] * (df_crono['percentual'] / 100)).sum()
+            perc_fisico = (valor_fisico_executado / total_contratado) * 100
+            perc_financeiro = ((total_pago + total_permuta) / total_contratado) * 100
+
+        return total_contratado, total_permuta, total_pago, saldo, atraso, perc_fisico, perc_financeiro
+    except: return 0, 0, 0, 0, 0, 0, 0
 
 def get_dados_pareto_resumo(filtro_id=None):
     df_desp = get_despesas_realizadas()
     df_perm = get_permutas()
 
-    # Aplica Filtro
     if filtro_id and str(filtro_id) != 'todos':
         fid = int(filtro_id)
         if not df_desp.empty: df_desp = df_desp[df_desp['projeto_id'] == fid]
         if not df_perm.empty: df_perm = df_perm[df_perm['projeto_id'] == fid]
 
-    # 1. Agrupa Despesas PAGAS
     if not df_desp.empty:
         df_desp = df_desp[df_desp['status'] == 'Pago']
         df_cat = df_desp.groupby('categoria')['valor'].sum().reset_index()
     else:
         df_cat = pd.DataFrame(columns=['categoria', 'valor'])
 
-    # 2. Soma Permutas como categoria
     val_permuta = df_perm['valor'].sum() if not df_perm.empty else 0
     if val_permuta > 0:
         row_permuta = pd.DataFrame({'categoria': ['Permuta'], 'valor': [val_permuta]})
@@ -192,9 +235,7 @@ def get_dados_pareto_resumo(filtro_id=None):
 
     if df_cat.empty: return pd.DataFrame()
 
-    # 3. Ordena e Cria "Outros"
     df_cat = df_cat.sort_values(by='valor', ascending=False)
-    
     if len(df_cat) > 5:
         top_5 = df_cat.iloc[:5]
         outros_val = df_cat.iloc[5:]['valor'].sum()
@@ -203,11 +244,9 @@ def get_dados_pareto_resumo(filtro_id=None):
     else:
         df_final = df_cat
 
-    # 4. Acumulado
     total = df_final['valor'].sum()
     df_final['perc'] = (df_final['valor'] / total) * 100
     df_final['acum'] = df_final['perc'].cumsum()
-    
     return df_final
 
 def calcular_orcado_vs_realizado():
@@ -246,7 +285,7 @@ def calcular_orcado_vs_realizado():
 
 def get_detalhes_atraso():
     try:
-        sql = """SELECT p.nome as projeto, e.etapa, e.data_fim, e.valor_estimado, e.percentual FROM cronograma_etapas e JOIN projetos p ON e.projeto_id = p.id WHERE e.data_fim < CURRENT_DATE AND e.status != 'Concluído' ORDER BY e.data_fim ASC"""
+        sql = """SELECT p.nome as projeto, e.etapa, e.data_fim, e.valor_estimado, e.percentual FROM cronograma_etapas e JOIN projetos p ON e.projeto_id = p.id WHERE e.data_fim < CURRENT_DATE AND e.percentual < 100 ORDER BY e.data_fim ASC"""
         return pd.read_sql(sql, engine)
     except: return pd.DataFrame()
 
@@ -280,6 +319,8 @@ def calcular_projecao_futura():
     if not lista_projecao: return pd.DataFrame()
     return pd.DataFrame(lista_projecao).groupby(['Data', 'Projeto'])['Valor Projetado'].sum().reset_index()
 
+# --- FUNÇÕES GRÁFICAS ---
+
 def gerar_figura_gantt(filtro_obra_id=None):
     df_crono = get_cronograma()
     if df_crono.empty: return px.bar(title="Sem cronograma cadastrado", template="plotly_white")
@@ -309,7 +350,18 @@ def gerar_figura_gantt(filtro_obra_id=None):
     fig.update_layout(title=dict(text=title_text, font=dict(size=24, color="black", family="Arial Black")), xaxis=dict(title="Linha do Tempo", side="top", tickfont=dict(size=14, family="Arial Black", color="black"), gridcolor="#e5e7eb"), yaxis=dict(title="", autorange="reversed", tickfont=dict(size=14, family="Arial Black", color="black"), dtick=1), legend=dict(orientation="h", y=1.05), margin=dict(l=10, r=10, t=120, b=50), autosize=True)
     return fig
 
-# --- 3. APP SETUP ---
+def gerar_grafico_descompasso(fisico_pct, financeiro_pct):
+    cor_fin = "#ef4444" if financeiro_pct > (fisico_pct + 2) else "#10b981"
+    fig = go.Figure()
+    fig.add_trace(go.Bar(x=[fisico_pct], y=["Progresso"], name='Avanço Físico (Obra)', orientation='h', marker_color='#2563eb', text=f"{fisico_pct:.1f}%", textposition='auto', width=0.6))
+    fig.add_trace(go.Bar(x=[financeiro_pct], y=["Progresso"], name='Avanço Financeiro (Pago)', orientation='h', marker_color=cor_fin, text=f"{financeiro_pct:.1f}%", textposition='auto', width=0.3))
+    fig.update_layout(title="<b>Físico vs Financeiro (O Descompasso)</b>", template="plotly_white", barmode='overlay', xaxis=dict(range=[0, 100], showgrid=True, title="%"), yaxis=dict(showticklabels=False), legend=dict(orientation="h", y=-0.2), height=200, margin=dict(l=20, r=20, t=50, b=20))
+    diff = fisico_pct - financeiro_pct
+    msg = "✅ Eficiente" if diff >= 0 else "⚠️ Atenção"
+    fig.add_annotation(x=50, y=1, text=msg, showarrow=False, font=dict(size=12, color="gray"), yshift=20)
+    return fig
+
+# --- 4. APP SETUP ---
 app = dash.Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP, dbc.icons.BOOTSTRAP], suppress_callback_exceptions=True)
 server = app.server
 
@@ -339,31 +391,17 @@ def create_kpi_card(title, value, icon_class, color_bg):
 # --- LAYOUTS DAS PÁGINAS ---
 
 def serve_resumo_global():
-    # Opções do Filtro
     df_proj = get_projetos()
-    opcoes = [{'label': 'Todas as Obras', 'value': 'todos'}] + \
-             [{'label': row['nome'], 'value': row['id']} for i, row in df_proj.iterrows()]
+    opcoes = [{'label': 'Todas as Obras', 'value': 'todos'}] + [{'label': row['nome'], 'value': row['id']} for i, row in df_proj.iterrows()]
 
     return html.Div([
         dbc.Row([
             dbc.Col(html.H3("Painel de Controle", style={"fontWeight": "bold", "color": "#111827"}), width=8),
-            # FILTRO NOVO AQUI
-            dbc.Col(
-                dcc.Dropdown(
-                    id='filtro-global-obra',
-                    options=opcoes,
-                    value='todos',
-                    clearable=False,
-                    placeholder="Filtrar por Obra",
-                    style={"borderRadius": "8px"}
-                ), width=4
-            )
+            dbc.Col(dcc.Dropdown(id='filtro-global-obra', options=opcoes, value='todos', clearable=False, placeholder="Filtrar por Obra", style={"borderRadius": "8px"}), width=4)
         ], className="mb-4 align-items-center"),
 
-        # AQUI É ONDE O CONTEÚDO SERÁ INJETADO PELO CALLBACK (KPIs + Tabela + Gráfico)
         html.Div(id='conteudo-resumo-global'),
 
-        # Modal de Risco
         dbc.Modal([
             dbc.ModalHeader(dbc.ModalTitle("⚠️ Detalhamento de Itens em Atraso"), close_button=True), 
             dbc.ModalBody(id="body-modal-risk"), 
@@ -425,7 +463,7 @@ def serve_tabelas():
         ])]), dcc.Download(id="download-despesas"), dcc.Download(id="download-permutas")
     ])
 
-# --- 4. CALLBACKS ---
+# --- 5. CALLBACKS ---
 
 @app.callback(Output("page-content", "children"), [Input("url", "pathname")])
 def render_page(path):
@@ -434,23 +472,21 @@ def render_page(path):
     elif path == "/tabelas": return serve_tabelas()
     return serve_resumo_global()
 
-# --- NOVO CALLBACK PRINCIPAL: ATUALIZA RESUMO GLOBAL (KPIs + Tabela + Gráfico) ---
+# --- ATUALIZAÇÃO DO PAINEL GLOBAL ---
 @app.callback(
     Output('conteudo-resumo-global', 'children'),
     Input('filtro-global-obra', 'value')
 )
 def update_resumo_global_content(filtro_id):
-    # 1. Gera KPIs Filtrados
-    tot_contratado, tot_permuta, tot_pago_em_dinheiro, saldo, atraso = get_kpis_globais(filtro_id)
+    # 1. KPIs
+    tot_contratado, tot_permuta, tot_pago_em_dinheiro, saldo, atraso, perc_fisico, perc_financeiro = get_kpis_globais(filtro_id)
     fmt = lambda x: f"R$ {x:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
     
-    # 2. Gera Dados da Tabela de Obras
-    # Nota: Se filtrar uma obra específica, a tabela mostra apenas ela.
+    # 2. Tabela Resumo
     df_resumo = get_tabela_resumo_financeiro()
     if filtro_id and filtro_id != 'todos':
         df_resumo = df_resumo[df_resumo['id'] == int(filtro_id)]
 
-    # Monta HTML da Tabela
     table_rows = []
     for index, row in df_resumo.iterrows():
         color_bar = "success" if row['perc_pago'] >= 90 else "primary"
@@ -460,70 +496,59 @@ def update_resumo_global_content(filtro_id):
             html.Td(fmt(row['vl_contrato'])), 
             html.Td(fmt(row['vl_pago'] + row['vl_permuta']), style={"color": "#10b981", "fontWeight": "bold"}),
             html.Td(fmt(row['saldo']), style={"color": "#ef4444"}),
-            html.Td([
-                html.Div(f"{row['perc_pago']:.1f}%", style={"fontSize": "12px", "marginBottom": "2px"}), 
-                dbc.Progress(value=row['perc_pago'], color=color_bar, style={"height": "8px"}, className="mb-0")
-            ], style={"width": "150px", "verticalAlign": "middle"})
+            html.Td([html.Div(f"{row['perc_pago']:.1f}%", style={"fontSize": "12px", "marginBottom": "2px"}), dbc.Progress(value=row['perc_pago'], color=color_bar, style={"height": "8px"}, className="mb-0")], style={"width": "150px", "verticalAlign": "middle"})
         ]))
-    
-    # Linha de Totais
     if len(df_resumo) > 0:
-        table_rows.append(html.Tr([
-            html.Td("TOTAIS", colSpan=2, style={"textAlign": "right", "fontWeight": "bold"}), 
-            html.Td(html.B(fmt(df_resumo['vl_contrato'].sum()))), 
-            html.Td(html.B(fmt(df_resumo['vl_pago'].sum() + df_resumo['vl_permuta'].sum())), style={"color": "#10b981"}), 
-            html.Td(html.B(fmt(df_resumo['saldo'].sum())), style={"color": "#ef4444"}), 
-            html.Td("")
-        ], style={"backgroundColor": "#f9fafb"}))
+        table_rows.append(html.Tr([html.Td("TOTAIS", colSpan=2, style={"textAlign": "right", "fontWeight": "bold"}), html.Td(html.B(fmt(df_resumo['vl_contrato'].sum()))), html.Td(html.B(fmt(df_resumo['vl_pago'].sum() + df_resumo['vl_permuta'].sum())), style={"color": "#10b981"}), html.Td(html.B(fmt(df_resumo['saldo'].sum())), style={"color": "#ef4444"}), html.Td("")], style={"backgroundColor": "#f9fafb"}))
 
-    # 3. Gera Gráfico de Pareto Filtrado
+    # 3. Gráficos
+    # A) Gráfico Descompasso
+    fig_descompasso = gerar_grafico_descompasso(perc_fisico, perc_financeiro)
+    
+    # B) Gráfico Tendência (Histórico)
+    df_hist = get_dados_historico_tendencia(filtro_id)
+    if not df_hist.empty:
+        fig_trend = px.line(df_hist, x='data_registro', y='percentual_novo', color='projeto', title="Evolução Física Registrada (Tendência)", template="plotly_white", markers=True)
+        graph_trend = dcc.Graph(figure=fig_trend, config={'displayModeBar': False}, style={"height": "300px"})
+    else:
+        graph_trend = html.Div("Sem histórico de evolução registrado.", className="text-center text-muted p-4")
+
+    # C) Gráfico Pareto (Custos)
     df_pareto = get_dados_pareto_resumo(filtro_id)
     if not df_pareto.empty:
         fig_pareto = go.Figure()
-        fig_pareto.add_trace(go.Bar(
-            x=df_pareto['categoria'], y=df_pareto['valor'], 
-            name='Valor (R$)', marker_color='#2563eb',
-            text=df_pareto['valor'].apply(lambda x: f"R$ {x:,.0f}".replace(",", ".")), textposition='auto'
-        ))
-        fig_pareto.add_trace(go.Scatter(
-            x=df_pareto['categoria'], y=df_pareto['acum'], 
-            name='% Acumulado', yaxis='y2', mode='lines+markers', line=dict(color='#ef4444', width=3)
-        ))
-        fig_pareto.update_layout(
-            title="<b>Composição de Custos (Pareto) - Permutas + Despesas</b>", template="plotly_white",
-            legend=dict(orientation="h", y=1.1),
-            yaxis=dict(title="R$"), yaxis2=dict(title="%", overlaying='y', side='right', range=[0, 110], showgrid=False),
-            height=350, margin=dict(l=20, r=20, t=50, b=20)
-        )
-        graph_component = dcc.Graph(figure=fig_pareto, config={'displayModeBar': False})
+        fig_pareto.add_trace(go.Bar(x=df_pareto['categoria'], y=df_pareto['valor'], name='Valor (R$)', marker_color='#2563eb', text=df_pareto['valor'].apply(lambda x: f"R$ {x:,.0f}".replace(",", ".")), textposition='auto'))
+        fig_pareto.add_trace(go.Scatter(x=df_pareto['categoria'], y=df_pareto['acum'], name='% Acumulado', yaxis='y2', mode='lines+markers', line=dict(color='#ef4444', width=3)))
+        fig_pareto.update_layout(title="<b>Composição de Custos (Pareto)</b>", template="plotly_white", legend=dict(orientation="h", y=1.1), yaxis=dict(title="R$"), yaxis2=dict(title="%", overlaying='y', side='right', range=[0, 110], showgrid=False), height=300, margin=dict(l=20, r=20, t=50, b=20))
+        graph_pareto = dcc.Graph(figure=fig_pareto, config={'displayModeBar': False})
     else:
-        graph_component = html.Div("Sem dados financeiros para gerar gráfico.", className="text-center text-muted p-4")
+        graph_pareto = html.Div("Sem dados financeiros.", className="text-center text-muted p-4")
 
-    # --- MONTAGEM FINAL DO LAYOUT (ORDEM: KPI -> Tabela -> Gráfico) ---
+    # --- LAYOUT FINAL ---
     return html.Div([
-        # 1. CARDS DE KPI
+        # KPIs
         dbc.Row([
             dbc.Col(create_kpi_card("Carteira Contratada", fmt(tot_contratado), "bi bi-currency-dollar", "#3b82f6"), width=12, md=6, lg=3),
             dbc.Col(create_kpi_card("Total Pago + Permuta", fmt(tot_pago_em_dinheiro + tot_permuta), "bi bi-check-lg", "#10b981"), width=12, md=6, lg=3),
             dbc.Col(create_kpi_card("Saldo a Pagar", fmt(saldo), "bi bi-wallet2", "#8b5cf6"), width=12, md=6, lg=3),
-            # CORREÇÃO AQUI: ID como dicionário para pattern matching
+            # Correção do ID do botão de Risco
             dbc.Col(html.Div(create_kpi_card("Risco / Atraso", fmt(atraso), "bi bi-exclamation-circle", "#ef4444"), id={'type': 'btn-open-risk', 'index': 0}, n_clicks=0, style={"cursor": "pointer"}), width=12, md=6, lg=3),
         ], className="mb-4"),
 
-        # 2. TABELA (AGORA VEM ANTES)
-        dbc.Card([
-            dbc.CardHeader("📊 Status Financeiro por Empreendimento", style={"backgroundColor": "white", "fontWeight": "bold"}), 
-            dbc.CardBody(dbc.Table([
-                html.Thead(html.Tr([html.Th("Empreendimento"), html.Th("Empresa"), html.Th("Vl. Contrato"), html.Th("Vl. Pago"), html.Th("Saldo Devedor"), html.Th("% Pago")])), 
-                html.Tbody(table_rows)
-            ], hover=True, responsive=True))
-        ], style={"border": "none", "borderRadius": "12px", "boxShadow": "0 4px 6px -1px rgba(0,0,0,0.1)", "marginBottom": "20px"}),
+        # LINHA DE INTELIGÊNCIA (Descompasso + Tendência)
+        dbc.Row([
+            dbc.Col(dbc.Card(dbc.CardBody(dcc.Graph(figure=fig_descompasso, config={'displayModeBar': False}, style={"height": "250px"})), style={"border": "none", "borderRadius": "12px", "boxShadow": "0 4px 6px -1px rgba(0,0,0,0.1)"}), width=12, lg=4, className="mb-4"),
+            dbc.Col(dbc.Card(dbc.CardBody(graph_trend), style={"border": "none", "borderRadius": "12px", "boxShadow": "0 4px 6px -1px rgba(0,0,0,0.1)"}), width=12, lg=8, className="mb-4")
+        ]),
 
-        # 3. GRÁFICO PARETO (AGORA VEM DEPOIS)
-        dbc.Card([
-            dbc.CardBody([dcc.Loading(graph_component)])
-        ], style={"border": "none", "borderRadius": "12px", "boxShadow": "0 4px 6px -1px rgba(0,0,0,0.1)", "marginBottom": "20px"})
+        # TABELA GERAL
+        dbc.Card([dbc.CardHeader("📊 Status Financeiro Detalhado", style={"backgroundColor": "white", "fontWeight": "bold"}), dbc.CardBody(dbc.Table([html.Thead(html.Tr([html.Th("Empreendimento"), html.Th("Empresa"), html.Th("Vl. Contrato"), html.Th("Vl. Pago"), html.Th("Saldo Devedor"), html.Th("% Pago")])), html.Tbody(table_rows)], hover=True, responsive=True))], style={"border": "none", "borderRadius": "12px", "boxShadow": "0 4px 6px -1px rgba(0,0,0,0.1)", "marginBottom": "20px"}),
+
+        # PARETO
+        dbc.Card(dbc.CardBody(graph_pareto), style={"border": "none", "borderRadius": "12px", "boxShadow": "0 4px 6px -1px rgba(0,0,0,0.1)", "marginBottom": "20px"})
     ])
+
+# --- CRUD E AÇÕES ---
 
 @app.callback(Output("msg-obra", "children"), Input("btn-criar-obra", "n_clicks"), State("input-nova-obra", "value"), prevent_initial_call=True)
 def criar_obra(n, nome):
@@ -534,19 +559,22 @@ def criar_obra(n, nome):
 @app.callback(Output("confirm-delete-obra", "displayed"), Input("btn-ask-delete-obra", "n_clicks"), prevent_initial_call=True)
 def show_delete_confirm(n): return True
 
-@app.callback(
-    [Output("url", "pathname", allow_duplicate=True), Output("msg-obra", "children", allow_duplicate=True)],
-    Input("confirm-delete-obra", "submit_n_clicks"), State("select-obra", "value"), prevent_initial_call=True
-)
+@app.callback([Output("url", "pathname", allow_duplicate=True), Output("msg-obra", "children", allow_duplicate=True)], Input("confirm-delete-obra", "submit_n_clicks"), State("select-obra", "value"), prevent_initial_call=True)
 def excluir_obra_completa(submit_n_clicks, obra_id):
     if not obra_id: return dash.no_update, dbc.Alert("Selecione!", color="warning")
     try:
         with engine.connect() as conn:
-            for t in ["cronograma_etapas", "despesas", "permutas", "projetos"]: conn.execute(text(f"DELETE FROM {t} WHERE {'projeto_id' if t!='projetos' else 'id'} = :id"), {"id": obra_id})
+            for t in ["historico_fisico", "cronograma_etapas", "despesas", "permutas", "projetos"]:
+                id_col = 'id' if t == 'projetos' else 'projeto_id'
+                if t == 'historico_fisico': # Historico não tem projeto_id direto, apaga via cascade ou subquery, mas aqui garantimos limpeza
+                    pass # O DB cascade cuida, ou limpamos via etapa
+                else:
+                    conn.execute(text(f"DELETE FROM {t} WHERE {id_col} = :id"), {"id": obra_id})
             conn.commit()
         return "/projetos", dbc.Alert("Excluído!", color="success")
     except Exception as e: return dash.no_update, dbc.Alert(f"Erro: {e}", color="danger")
 
+# --- CALLBACK DE SALVAMENTO DE ETAPA COM HISTÓRICO ---
 @app.callback(
     [Output("msg-etapa", "children"), Output("input-valor", "value"), Output("input-percent", "value"), Output("input-inicio", "value"), Output("input-fim", "value"), Output("select-etapa", "value"), Output("stored-etapa-id", "data"), Output("btn-excluir-etapa", "disabled"), Output("tabela-etapas-crud", "selected_rows"), Output("select-obra", "value")],
     [Input("btn-salvar-etapa", "n_clicks"), Input("btn-excluir-etapa", "n_clicks"), Input("btn-limpar-form", "n_clicks"), Input("tabela-etapas-crud", "selected_rows"), Input("grafico-gantt", "clickData")], 
@@ -555,27 +583,41 @@ def excluir_obra_completa(submit_n_clicks, obra_id):
 def manage_stage_crud(n_save, n_del, n_clean, selected_rows, clickData, obra_id, etapa, val, perc, ini, fim, current_id, table_data):
     ctx = callback_context
     trig = ctx.triggered[0]['prop_id'].split('.')[0] if ctx.triggered else ""
+    
     if trig == "grafico-gantt" and clickData:
         try:
             cdata = clickData['points'][0]['customdata']
             return "", cdata[1], cdata[2], cdata[3], cdata[4], cdata[5], cdata[0], False, dash.no_update, cdata[6]
-        except: return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, current_id, dash.no_update, dash.no_update, dash.no_update
+        except: pass
+        
     if trig == "tabela-etapas-crud" and selected_rows:
         if table_data and selected_rows[0] < len(table_data):
             row = table_data[selected_rows[0]]
             return "", row['valor_estimado'], row['percentual'], row['data_inicio'], row['data_fim'], row['etapa'], row['id_etapa'], False, dash.no_update, row['projeto_id']
+            
     if trig == "btn-limpar-form": return "", "", "", "", "", None, None, True, [], None
+    
     if trig == "btn-excluir-etapa" and current_id:
         with engine.connect() as conn: conn.execute(text("DELETE FROM cronograma_etapas WHERE id = :id"), {"id": current_id}); conn.commit()
         return dbc.Alert("Excluído!", color="warning"), "", "", "", "", None, None, True, [], dash.no_update
+        
     if trig == "btn-salvar-etapa":
         if not all([obra_id, etapa, ini, fim]): return dbc.Alert("Preencha!", color="warning"), dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, current_id, (current_id is None), dash.no_update, dash.no_update
+        
+        val, perc = val or 0, perc or 0
         with engine.connect() as conn:
-            val, perc = val or 0, perc or 0
-            if current_id: conn.execute(text("UPDATE cronograma_etapas SET etapa=:e, data_inicio=:i, data_fim=:f, valor_estimado=:v, percentual=:p, projeto_id=:pid WHERE id=:id"), {"e": etapa, "i": ini, "f": fim, "v": val, "p": perc, "id": current_id, "pid": obra_id})
-            else: conn.execute(text("INSERT INTO cronograma_etapas (projeto_id, etapa, data_inicio, data_fim, valor_estimado, percentual) VALUES (:pid, :e, :i, :f, :v, :p)"), {"pid": obra_id, "e": etapa, "i": ini, "f": fim, "v": val, "p": perc})
+            if current_id: 
+                conn.execute(text("UPDATE cronograma_etapas SET etapa=:e, data_inicio=:i, data_fim=:f, valor_estimado=:v, percentual=:p, projeto_id=:pid WHERE id=:id"), {"e": etapa, "i": ini, "f": fim, "v": val, "p": perc, "id": current_id, "pid": obra_id})
+                # REGISTRA HISTÓRICO (UPDATE)
+                conn.execute(text("INSERT INTO historico_fisico (etapa_id, data_registro, percentual_novo) VALUES (:eid, CURRENT_DATE, :p)"), {"eid": current_id, "p": perc})
+            else: 
+                # REGISTRA NOVO E HISTÓRICO
+                res = conn.execute(text("INSERT INTO cronograma_etapas (projeto_id, etapa, data_inicio, data_fim, valor_estimado, percentual) VALUES (:pid, :e, :i, :f, :v, :p) RETURNING id"), {"pid": obra_id, "e": etapa, "i": ini, "f": fim, "v": val, "p": perc})
+                new_id = res.fetchone()[0]
+                conn.execute(text("INSERT INTO historico_fisico (etapa_id, data_registro, percentual_novo) VALUES (:eid, CURRENT_DATE, :p)"), {"eid": new_id, "p": perc})
             conn.commit()
-        return dbc.Alert("Salvo!", color="success"), "", "", "", "", None, None, True, [], dash.no_update
+        return dbc.Alert("Salvo e Registrado!", color="success"), "", "", "", "", None, None, True, [], dash.no_update
+        
     return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, True, dash.no_update, dash.no_update
 
 @app.callback([Output("grafico-gantt", "figure"), Output("tabela-etapas-crud", "data"), Output("select-obra", "options")], [Input("url", "pathname"), Input("msg-etapa", "children"), Input("msg-obra", "children"), Input("select-obra", "value")])
@@ -714,7 +756,7 @@ def manage_permutas_crud(n_save, n_del, n_clean, selected, path, proj, desc, val
         return dbc.Alert("Salvo!", color="success"), "", "", "", "", None, True, reload_data(), []
     return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, True, dash.no_update, dash.no_update
 
-# --- CORREÇÃO FINAL APLICADA ABAIXO ---
+# --- CALLBACK DE RISCO (CORRIGIDO COM PATTERN MATCHING) ---
 @app.callback(
     [Output("modal-risk", "is_open"), Output("body-modal-risk", "children")],
     [Input({'type': 'btn-open-risk', 'index': ALL}, "n_clicks"), Input("btn-close-risk", "n_clicks")],
@@ -722,21 +764,16 @@ def manage_permutas_crud(n_save, n_del, n_clean, selected, path, proj, desc, val
 )
 def toggle_risk_modal(n_open_list, n_close, is_open):
     ctx = callback_context
-    if not ctx.triggered:
-        return is_open, dash.no_update
+    if not ctx.triggered: return is_open, dash.no_update
     
     trig_id = ctx.triggered[0]['prop_id'].split('.')[0]
     
-    # Se foi o botão de fechar (ID normal)
-    if trig_id == "btn-close-risk":
-        return False, dash.no_update
-        
-    # Se foi o botão de abrir (ID de dicionário/lista)
-    # n_open_list chega como uma lista de n_clicks, ex: [1]
+    if trig_id == "btn-close-risk": return False, dash.no_update
+    
+    # Se clicou no botão de abrir (que pode ser dinâmico)
     if n_open_list and any(n_open_list):
         df = get_detalhes_atraso()
-        if df.empty:
-            return True, dbc.Alert("Nenhuma etapa em atraso.", color="success")
+        if df.empty: return True, dbc.Alert("Nenhuma etapa em atraso.", color="success")
         return True, dbc.Table.from_dataframe(df, striped=True, bordered=True, hover=True)
         
     return is_open, dash.no_update
